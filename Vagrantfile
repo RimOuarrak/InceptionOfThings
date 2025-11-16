@@ -1,6 +1,5 @@
 Vagrant.configure("2") do |config|
-  # Base box settings
-  BOX_NAME = "ubuntu/jammy64"   # Latest Ubuntu LTS
+  BOX_NAME = "ubuntu/jammy64"
   BOX_MEMORY = 1024
   BOX_CPUS = 1
 
@@ -19,22 +18,27 @@ Vagrant.configure("2") do |config|
     server.vm.provision "shell", inline: <<-SHELL
       sudo apt-get update -y
       sudo apt-get install -y curl sshpass git vim
-
-      # Disable swap
       sudo swapoff -a
       sudo sed -i '/ swap / s/^/#/' /etc/fstab
 
       # Install K3s server
       curl -sfL https://get.k3s.io | sh -
 
-      # Install kubectl
-      sudo apt-get install -y kubectl
+      # Wait for K3s to finish initializing and then export token + kubeconfig
+      while [ ! -f /var/lib/rancher/k3s/server/node-token ]; do
+        echo "Waiting for k3s token..."
+        sleep 2
+      done
 
-      # Allow passwordless SSH within Vagrant network
-      mkdir -p ~/.ssh
-      ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
-      cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
-      chmod 600 ~/.ssh/authorized_keys
+      # Export node token and kubeconfig to the shared /vagrant folder so agents can read them
+      sudo cp /var/lib/rancher/k3s/server/node-token /vagrant/node-token
+      sudo cp /etc/rancher/k3s/k3s.yaml /vagrant/k3s.yaml
+      sudo chown vagrant:vagrant /vagrant/node-token /vagrant/k3s.yaml || true
+
+      # Also configure kubectl for vagrant user on the server itself
+      mkdir -p /home/vagrant/.kube
+      sudo cp /etc/rancher/k3s/k3s.yaml /home/vagrant/.kube/config
+      sudo chown vagrant:vagrant /home/vagrant/.kube/config
     SHELL
   end
 
@@ -53,20 +57,28 @@ Vagrant.configure("2") do |config|
     worker.vm.provision "shell", inline: <<-SHELL
       sudo apt-get update -y
       sudo apt-get install -y curl sshpass git vim
-
-      # Disable swap
       sudo swapoff -a
       sudo sed -i '/ swap / s/^/#/' /etc/fstab
 
-      # Get K3s token from server
+      # Wait until server is ready
       SERVER_IP="192.168.56.110"
-      TOKEN=$(ssh -o StrictHostKeyChecking=no vagrant@$SERVER_IP "sudo cat /var/lib/rancher/k3s/server/node-token")
+      while ! nc -z $SERVER_IP 6443; do
+        echo "Waiting for server $SERVER_IP..."
+        sleep 5
+      done
+      # Read K3s token exported by server into shared /vagrant folder
+      # Wait until the token file is available (server writes it)
+      while [ ! -f /vagrant/node-token ]; do
+        echo "Waiting for /vagrant/node-token..."
+        sleep 2
+      done
+      TOKEN=$(cat /vagrant/node-token)
 
-      # Install K3s agent
+      # Install K3s agent using the token from the shared folder
       curl -sfL https://get.k3s.io | K3S_URL=https://$SERVER_IP:6443 K3S_TOKEN=$TOKEN sh -
 
-      # Install kubectl
-      sudo apt-get install -y kubectl
+      # Note: the agent does not have the server kubeconfig at /etc/rancher/k3s/k3s.yaml
+      # Keep kubectl installed if needed
     SHELL
   end
 end
