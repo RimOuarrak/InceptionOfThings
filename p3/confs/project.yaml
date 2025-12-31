@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: development
+  labels:
+    app: iot-argocd
+spec:
+  description: Development Project
+  sourceRepos:
+    - https://github.com/mtourham/iot-wilplayground.git
+  destinations:
+    - namespace: dev
+      server: https://kubernetes.default.svc
+  orphanedResources:
+    warn: false
